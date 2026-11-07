@@ -1,0 +1,4 @@
+[client]
+#toolbarMode = "minimal"  # Nasconde il tasto Fork e l'icona GitHub (lascia solo i 3 pallini se necessario)
+# OPPURE:
+toolbarMode = "off"     # Disattiva completamente l'intera barra in alto
