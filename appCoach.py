@@ -15,6 +15,8 @@ st.set_page_config(
     page_title="RobyCoach AI - Dashboard", page_icon="🚴", layout="wide"
 )
 
+LOGO_PATH = "logo_rcai.png"
+
 # ==================== RECUPERO SECRETS / WHITELIST ====================
 try:
   UTENTI_ABILITATI = st.secrets.get("UTENTI_ABILITATI", [])
@@ -40,7 +42,9 @@ if st.session_state["athlete_id"] and st.session_state["api_key"]:
 
 # ==================== SCHERMATA 1: LOGIN DEDICATA ====================
 if not st.session_state["authenticated"]:
-  st.title("🚴 RobyCoach AI")
+  if os.path.exists(LOGO_PATH):
+    st.image(LOGO_PATH, width=500)  # Logo grande nel login
+
   st.subheader("🔑 Accesso al Sistema")
 
   with st.form("form_login"):
@@ -122,7 +126,6 @@ def estrai_secondi(valore):
 
 
 def genera_nome_univoco(directory, nome_desiderato, estensione_default=".zwo"):
-  # Rimuove/Sostituisce i caratteri non validi nei file di sistema (es. '/' in '_')
   nome_pulito = re.sub(r'[\\/*?:"<>|]', "_", nome_desiderato)
 
   nome_base, estensione = os.path.splitext(nome_pulito)
@@ -333,7 +336,6 @@ def recupera_dettaglio_attivita(
   if workout_text:
     dettaglio_step = workout_text.replace("\n", " | ").strip()
 
-  # Se manca il testo diretto dall'attività, controlliamo l'evento accoppiato da calendario
   if not dettaglio_step and act.get("paired_event_id"):
     try:
       ev_id = act.get("paired_event_id")
@@ -352,7 +354,6 @@ def recupera_dettaglio_attivita(
     except Exception:
       pass
 
-  # Fallback da intervalli eseguiti se disponibili
   if (
       not dettaglio_step
       and "icu_intervals" in act
@@ -368,7 +369,6 @@ def recupera_dettaglio_attivita(
     if passi:
       dettaglio_step = " -> ".join(passi[:8])
 
-  # Fallback dinamico basato sulle zone di potenza
   if not dettaglio_step:
     if p_zones and len(p_zones) >= 5:
       z4_min = p_zones[3]
@@ -518,7 +518,8 @@ def chiama_gemini_safe(client, prompt_o_chat):
 # ==================== HEADER HOME & TASTO LOGOUT ====================
 col_title, col_logout = st.columns([3, 1])
 with col_title:
-  st.title("🚴 RobyCoach AI")
+  if os.path.exists(LOGO_PATH):
+    st.image(LOGO_PATH, width=500)  # Logo grande senza testo affianco
   st.caption(f"Connesso come: **{ATHLETE_ID}**")
 
 with col_logout:
@@ -832,7 +833,7 @@ Ecco lo storico recente delle attività dell'atleta estratto da Intervals.icu (i
 
 Sulla base dei parametri fisici (FTP, FC, Peso), delle note personali, dello storico e dei dettagli degli step svolti:
 1. Fornisci un commento dettagliato sullo stato di forma corrente (CTL, ATL, TSB con precisione a 2 decimali).
-2. Analizza l'andamento recente dei carichi, del tipo di stimoli energetici già effettuati (es. VO2Max, Soglia, Z2) e del recupero.
+​2. Analizza l'andamento recente dei carichi, del tipo di stimoli energetici già effettuati (es. VO2Max, Soglia, Z2) e del recupero.
 3. Fornisci raccomandazioni generali di preparazione per i prossimi giorni, indicando quali stimoli alternare rispetto alle ultime sessioni svolte.
 """
 
@@ -861,6 +862,69 @@ Sulla base dei parametri fisici (FTP, FC, Peso), delle note personali, dello sto
       df_attivita = pd.DataFrame(st.session_state["lista_attivita_inviate"])
       st.dataframe(df_attivita, use_container_width=True, hide_index=True)
 
+  # ==================== PARLA CON ROBYCOACH (SUBITO SOTTO LA TABELLA) ====================
+  st.markdown("---")
+  st.subheader("💬 Parla con RobyCoach AI")
+
+  suggerimenti = [
+      "Proponi un workout",
+      "Generami un .zwo alternativo di tipo VO2Max",
+      "Riduci la durata totale a 45 minuti",
+      "Spiegami meglio come eseguire il riscaldamento",
+      "Vorrei un allenamento per fare scarico attivo",
+  ]
+
+  cols_suggerimenti = st.columns(2)
+  prompt_selezionato = None
+
+  for i, sug in enumerate(suggerimenti):
+    col = cols_suggerimenti[i % 2]
+    if col.button(f"👉 {sug}", key=f"sug_{i}"):
+      prompt_selezionato = sug
+
+  user_input = st.chat_input("Scrivi un messaggio al Coach...")
+  messaggio_da_inviare = prompt_selezionato or user_input
+
+  if messaggio_da_inviare:
+    oggi_dt = datetime.date.today()
+    giorno_ita = GIORNI_SETTIMANA_ITA[oggi_dt.weekday()]
+    data_ita = oggi_dt.strftime("%d/%m/%Y")
+
+    prompt_completo = f"""
+          [OGGI È: {giorno_ita} {data_ita}]
+          {messaggio_da_inviare}
+
+          IMPORTANTE: Se la richiesta comporta la generazione o modifica di un allenamento .zwo:
+          - Controlla la struttura e gli step dell'ultimo allenamento svolto nello storico per NON riproporre due volte di fila la stessa scheda.
+          - Fornisci la struttura in TESTO SEMPLICE (Sintassi Intervals.icu) per copia/incolla rapido da smartphone.
+          - Genera l'XML .zwo rigorosamente all'interno del blocco Markdown ```xml ... ```.
+          - Usa durate espressamente in SECONDI e potenze in decimali FTP senza il simbolo '%'.
+          """
+
+    if "messages_history" not in st.session_state:
+      st.session_state["messages_history"] = []
+
+    st.session_state["messages_history"].append(
+        {"role": "user", "text": prompt_completo}
+    )
+    contesto_chiamata = [
+        m["text"] for m in st.session_state["messages_history"]
+    ]
+
+    with st.spinner("RobyCoach AI sta rispondendo..."):
+      try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = chiama_gemini_safe(client, contesto_chiamata)
+
+        st.session_state["messages_history"].append(
+            {"role": "model", "text": response.text}
+        )
+        st.rerun()
+
+      except Exception as e:
+        st.error(f"Errore durante la risposta del Coach: {e}")
+
+  # ==================== CONSIGLIO E RISPOSTA DEL COACH ====================
   if (
       "messages_history" in st.session_state
       and st.session_state["messages_history"]
@@ -871,6 +935,7 @@ Sulla base dei parametri fisici (FTP, FC, Peso), delle note personali, dello sto
         if m["role"] == "model"
     ][-1]
 
+    st.markdown("---")
     st.markdown("### 📋 Consiglio e Risposta del Coach")
     testo_pulito = re.sub(
         r"```xml\s*.*?\s*```", "", ultimo_msg_ai, flags=re.DOTALL
@@ -921,65 +986,11 @@ Sulla base dei parametri fisici (FTP, FC, Peso), delle note personali, dello sto
           )
           st.rerun()
 
-    st.markdown("---")
-    st.subheader("💬 Parla con RobyCoach AI")
-
-    suggerimenti = [
-        "Proponi un workout",
-        "Generami un .zwo alternativo di tipo VO2Max",
-        "Riduci la durata totale a 45 minuti",
-        "Spiegami meglio come eseguire il riscaldamento",
-        "Vorrei un allenamento per fare scarico attivo",
-    ]
-
-    cols_suggerimenti = st.columns(2)
-    prompt_selezionato = None
-
-    for i, sug in enumerate(suggerimenti):
-      col = cols_suggerimenti[i % 2]
-      if col.button(f"👉 {sug}", key=f"sug_{i}"):
-        prompt_selezionato = sug
-
-    user_input = st.chat_input("Scrivi un messaggio al Coach...")
-    messaggio_da_inviare = prompt_selezionato or user_input
-
-    if messaggio_da_inviare:
-      oggi_dt = datetime.date.today()
-      giorno_ita = GIORNI_SETTIMANA_ITA[oggi_dt.weekday()]
-      data_ita = oggi_dt.strftime("%d/%m/%Y")
-
-      prompt_completo = f"""
-            [OGGI È: {giorno_ita} {data_ita}]
-            {messaggio_da_inviare}
-
-            IMPORTANTE: Se la richiesta comporta la generazione o modifica di un allenamento .zwo:
-            - Controlla la struttura e gli step dell'ultimo allenamento svolto nello storico per NON riproporre due volte di fila la stessa scheda.
-            - Fornisci la struttura in TESTO SEMPLICE (Sintassi Intervals.icu) per copia/incolla rapido da smartphone.
-            - Genera l'XML .zwo rigorosamente all'interno del blocco Markdown ```xml ... ```.
-            - Usa durate espressamente in SECONDI e potenze in decimali FTP senza il simbolo '%'.
-            """
-
-      st.session_state["messages_history"].append(
-          {"role": "user", "text": prompt_completo}
-      )
-      contesto_chiamata = [
-          m["text"] for m in st.session_state["messages_history"]
-      ]
-
-      with st.spinner("RobyCoach AI sta rispondendo..."):
-        try:
-          client = genai.Client(api_key=GEMINI_API_KEY)
-          response = chiama_gemini_safe(client, contesto_chiamata)
-
-          st.session_state["messages_history"].append(
-              {"role": "model", "text": response.text}
-          )
-          st.rerun()
-
-        except Exception as e:
-          st.error(f"Errore durante la risposta del Coach: {e}")
-
-    # ==================== SALVATAGGIO CHAT ====================
+  # ==================== SALVATAGGIO CHAT ====================
+  if (
+      "messages_history" in st.session_state
+      and st.session_state["messages_history"]
+  ):
     st.markdown("---")
     with st.expander("💾 Salva la conversazione corrente"):
       col_titolo_chat, col_btn_chat = st.columns([2, 1])
